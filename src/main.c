@@ -11,6 +11,7 @@ typedef enum {
     STATE_MAIN_MENU,
     STATE_MODE_SELECT,
     STATE_GAME_RUNNING,
+    STATE_PAUSE_MENU,
     STATE_EXIT
 } GameState;
 
@@ -68,6 +69,27 @@ void render_mode_menu(SDL_Renderer *ren, TTF_Font *font, Button *single_btn, But
     render_button(ren, font, single_btn);
     render_button(ren, font, multi_btn);
     render_button(ren, font, back_btn);
+}
+void render_pause_menu(SDL_Renderer *ren, TTF_Font *font, Button *resume_btn, Button *restart_btn, Button *quitgame_btn) {
+    // Dim the background
+    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 180);
+    SDL_Rect dim = { 0, 0, 1280, 720 };
+    SDL_RenderFillRect(ren, &dim);
+
+    // Heading
+    SDL_Color white = {255,255,255,255};
+    SDL_Surface *surf = TTF_RenderText_Blended(font, "Paused", white);
+    SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, surf);
+    int tw = surf->w, th = surf->h;
+    SDL_Rect dst = { (1280-tw)/2, 120, tw, th };
+    SDL_RenderCopy(ren, tex, NULL, &dst);
+    SDL_FreeSurface(surf);
+    SDL_DestroyTexture(tex);
+
+    render_button(ren, font, resume_btn);
+    render_button(ren, font, restart_btn);
+    render_button(ren, font, quitgame_btn);
 }
 
 void render_fade(SDL_Renderer *ren, int alpha) {
@@ -144,9 +166,10 @@ int main(int argc, char *argv[])
     }
 
     // Create background
-    Background *bg = create_background(ren, "assets/textures/background1.bmp");
+    Background *bg = create_background(ren, "assets/textures/22.png");
     if (!bg)
     {
+        //destroy_background(bg);
         SDL_DestroyRenderer(ren);
         SDL_DestroyWindow(win);
         TTF_Quit();
@@ -156,6 +179,17 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    Background *game_bg =  create_background(ren, "assets/textures/game-bg.png");
+    if (!game_bg) {
+        destroy_background(bg);
+        SDL_DestroyRenderer(ren);
+        SDL_DestroyWindow(win);
+        TTF_Quit();
+        Mix_CloseAudio();
+        IMG_Quit();
+        SDL_Quit();
+        return 1;
+    }
 
     // --- [Load Font] ---
     TTF_Font *font = TTF_OpenFont("assets/fonts/OpenSans-Bold.ttf", 48); // Use a path to your .ttf font!
@@ -169,6 +203,8 @@ int main(int argc, char *argv[])
     }
 
     // --- [Button Declarations] ---
+
+    // main menu buttons
     Button play_btn = { { (1280-220)/2, 280, 220, 70 }, "Play", 0 };
     Button quit_btn = { { (1280-220)/2, 380, 220, 70 }, "Quit", 0 };
 
@@ -177,6 +213,10 @@ int main(int argc, char *argv[])
     Button multi_btn  = { { (1280-350)/2, 350, 350, 80 }, "Multiplayer", 0 };
     Button back_btn   = { { (1280-180)/2, 470, 180, 55 }, "Back", 0 };
 
+    // pause menu buttons
+    Button resume_btn = { { (1280-220)/2, 250, 220, 70 }, "Resume", 0 };
+    Button restart_btn = { { (1280-220)/2, 350, 220, 70 }, "Restart", 0 };
+    Button quitgame_btn = { { (1280-220)/2, 450, 220, 70 }, "Quit", 0 };
 
     // --- [Fade Speed & Next State] ---
     float fade_speed = 300.0f; // You can adjust for faster/slower fade
@@ -214,17 +254,29 @@ int main(int argc, char *argv[])
             //use of esc button to go back or quit for convinience
             if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE && !fading_in && !fading_out) 
             {
-                if (state == STATE_MAIN_MENU) 
-                {
+                if (state == STATE_MAIN_MENU) {
                     fading_out = 1;
-                    next_state = STATE_EXIT;  // ESC quits from main menu
+                    next_state = STATE_EXIT;
                 } 
-                else if (state == STATE_MODE_SELECT) 
-                {
+                else if (state == STATE_MODE_SELECT) {
                     fading_out = 1;
-                    next_state = STATE_MAIN_MENU; // ESC backs out from mode select
+                    next_state = STATE_MAIN_MENU;
+                }
+                else if (state == STATE_GAME_RUNNING) {
+                    state = STATE_PAUSE_MENU;
+                    // Reset fade flags so pause menu is instantly visible and responsive
+                    fade_alpha = 0;
+                    fading_in = 0;
+                    fading_out = 0;
+                }
+                else if (state == STATE_PAUSE_MENU) {
+                    state = STATE_GAME_RUNNING;
+                    fade_alpha = 0;
+                    fading_in = 0;
+                    fading_out = 0;
                 }
             }
+
 
 
             //Checks if the left mouse button was pressed.
@@ -263,6 +315,21 @@ int main(int argc, char *argv[])
                         next_state = STATE_MAIN_MENU;
                     }
                 }
+                else if (state == STATE_PAUSE_MENU && !fading_in && !fading_out) 
+                {
+                    if (point_in_rect(mx, my, &resume_btn.rect)) {
+                        state = STATE_GAME_RUNNING;
+                    }
+                    else if (point_in_rect(mx, my, &restart_btn.rect)) {
+                        // TODO: Add game state reset logic here
+                        state = STATE_GAME_RUNNING;
+                    }
+                    else if (point_in_rect(mx, my, &quitgame_btn.rect)) {
+                        fading_out = 1;
+                        next_state = STATE_MAIN_MENU;
+                    }
+                }
+
             }
 
         }
@@ -334,14 +401,21 @@ int main(int argc, char *argv[])
                     fade_alpha -= (int)(fade_speed * (delta_time / 1000.0f));
                     if (fade_alpha <= 0) { fade_alpha = 0; fading_in = 0; }
                 }
-                if (fading_out) {
+                if (fading_out) 
+                {
                     fade_alpha += (int)(fade_speed * (delta_time / 1000.0f));
                     if (fade_alpha >= 255) {
                         fade_alpha = 255;
                         fading_out = 0;
-                        fading_in = 1;
-                        state = next_state; // e.g. STATE_MODE_SELECT or STATE_EXIT
-                        fade_alpha = 255;
+
+                        // Only fade in for menus, not for game running
+                        if (next_state == STATE_GAME_RUNNING) {
+                            fading_in = 0;
+                        } else {
+                            fading_in = 1;
+                            fade_alpha = 255;
+                        }
+                        state = next_state;
                     }
                 }
                 render_fade(ren, fade_alpha);
@@ -378,21 +452,49 @@ int main(int argc, char *argv[])
                     if (fade_alpha >= 255) {
                         fade_alpha = 255;
                         fading_out = 0;
-                        fading_in = 1;
-                        state = next_state; // e.g. STATE_MAIN_MENU or STATE_GAME_RUNNING
-                        fade_alpha = 255;
+
+                        // Only fade in for menus, not for game running
+                        if (next_state == STATE_GAME_RUNNING) {
+                            fading_in = 0;
+                        } else {
+                            fading_in = 1;
+                            fade_alpha = 255;
+                        }
+                        state = next_state;
                     }
                 }
                 render_fade(ren, fade_alpha);
                 break;
 
             case STATE_GAME_RUNNING:
+                render_background(ren, game_bg);
                 // --- [Start Your Game] ---
                 // Here, remove all menu/UI and run your game logic and rendering.
                 // Example: render_background(ren, bg); render_player(ren, ...); etc.
                 // (No fade here unless you want a transition out.)
                 break;
+            case STATE_PAUSE_MENU:
+                render_background(ren, game_bg);
+                render_pause_menu(ren, font, &resume_btn, &restart_btn, &quitgame_btn);
 
+                // Fade logic for quitting out of pause menu
+                if (fading_out) {
+                    fade_alpha += (int)(fade_speed * (delta_time / 1000.0f));
+                    if (fade_alpha >= 255) {
+                        fade_alpha = 255;
+                        fading_out = 0;
+                        // Fade in only if returning to a menu, not if going back to game
+                        if (next_state == STATE_MAIN_MENU) {
+                            fading_in = 1;
+                            fade_alpha = 255;
+                        } else {
+                            fading_in = 0;
+                        }
+                        state = next_state;
+                    }
+                }
+                render_fade(ren, fade_alpha);
+                break;
             case STATE_EXIT:
                 running = 0; // End the main loop
                 break;
@@ -404,6 +506,7 @@ int main(int argc, char *argv[])
 
     // Cleanup
     destroy_background(bg);
+    destroy_background(game_bg);
     //destroy_player(&player);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
