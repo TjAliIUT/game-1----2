@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include "background.h"
 #include "player.h"
+#include <math.h>
 
 typedef enum {
     STATE_STARTUP_ANIMATION,
@@ -20,6 +21,74 @@ typedef struct {
     const char *label;
     int hovered;
 } Button;
+
+#define FIELD_W 1280
+#define FIELD_H 720
+#define HOLD_ZONE_W 100   // (change if your yellow area is a different width)
+
+#define LEFT_GOAL_X 18
+#define LEFT_GOAL_Y 273
+#define LEFT_GOAL_W 68
+#define LEFT_GOAL_H 175
+
+#define RIGHT_GOAL_X 1186
+#define RIGHT_GOAL_Y 273
+#define RIGHT_GOAL_W 69
+#define RIGHT_GOAL_H 175
+
+#define SPOT_RADIUS 32
+
+// const SDL_Color BROWN = {90, 50, 20, 255};
+// const SDL_Color RED   = {220, 30, 30, 255};
+// const SDL_Color BLUE  = {30, 80, 220, 255};
+
+
+
+
+
+//dynamic parts
+#define NUM_ROWS 3
+#define NUM_COLS 5
+#define NUM_DISKS 5
+#define NUM_CELLS (NUM_ROWS * NUM_COLS)
+
+// Left grid rectangle (from your coordinates)
+#define LEFT_GRID_LEFT   235
+#define LEFT_GRID_TOP    135
+#define LEFT_GRID_RIGHT  715
+#define LEFT_GRID_BOTTOM 935
+
+// Right grid rectangle (from your coordinates)
+#define RIGHT_GRID_LEFT   1155
+#define RIGHT_GRID_TOP    135
+#define RIGHT_GRID_RIGHT  1655
+#define RIGHT_GRID_BOTTOM 935
+
+typedef struct {
+    int x, y;
+    int occupied_by;
+} GridCell;
+
+typedef struct {
+    int start_x, start_y;
+    int x, y;
+    int is_dragged;
+    int placed_cell;
+    SDL_Color color;
+} PlayerDisk;
+
+// Colors
+const SDL_Color brown = {90, 50, 20, 255};
+const SDL_Color red   = {220, 30, 30, 255};
+const SDL_Color blue  = {30, 80, 220, 255};
+
+GridCell left_grid[NUM_CELLS];
+GridCell right_grid[NUM_CELLS];
+PlayerDisk left_disks[NUM_DISKS];
+PlayerDisk right_disks[NUM_DISKS];
+
+
+
 
 void render_button(SDL_Renderer *ren, TTF_Font *font, Button *btn) {
     SDL_Color color = btn->hovered ? (SDL_Color){200,200,255,255} : (SDL_Color){255,255,255,255};
@@ -98,6 +167,234 @@ void render_fade(SDL_Renderer *ren, int alpha) {
     SDL_Rect screen = {0, 0, 1280, 720};
     SDL_RenderFillRect(ren, &screen);
 }
+
+//solid color helper function
+void draw_filled_circle(SDL_Renderer *ren, int cx, int cy, int radius, SDL_Color color) {
+    SDL_SetRenderDrawColor(ren, color.r, color.g, color.b, color.a);
+    for (int w = -radius; w <= radius; w++) {
+        for (int h = -radius; h <= radius; h++) {
+            if (w*w + h*h <= radius*radius)
+                SDL_RenderDrawPoint(ren, cx + w, cy + h);
+        }
+    }
+}
+
+
+// initial draw and placement
+void render_player_zones_and_spots(SDL_Renderer *ren) {
+    printf("SPOT_RADIUS = %d\n", SPOT_RADIUS);
+    const int spot_radius = 40;
+    const float extra_gap_factor = 0.2f; // 20% of radius
+    const int n_top = 2, n_bot = 3;
+
+    // Colors
+    SDL_Color brown = {90, 50, 20, 255};
+    SDL_Color red   = {220, 30, 30, 255};
+    SDL_Color blue  = {30, 80, 220, 255};
+
+    // Draw goal rectangles (filled black)
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    SDL_Rect left_goal  = {LEFT_GOAL_X, LEFT_GOAL_Y, LEFT_GOAL_W, LEFT_GOAL_H};
+    SDL_Rect right_goal = {RIGHT_GOAL_X, RIGHT_GOAL_Y, RIGHT_GOAL_W, RIGHT_GOAL_H};
+    SDL_RenderFillRect(ren, &left_goal);
+    SDL_RenderFillRect(ren, &right_goal);
+
+    // --- Spot X positions (center of yellow area at each side) ---
+    int left_spot_x  = LEFT_GOAL_X + LEFT_GOAL_W / 2 - (int)(0.080f * HOLD_ZONE_W);   // 10% more left
+    int right_spot_x = RIGHT_GOAL_X + RIGHT_GOAL_W / 2 + (int)(0.080f * HOLD_ZONE_W); // 10% more right
+
+
+    // --- Top 2 spots ---
+    int top_start = spot_radius;
+    int top_end = LEFT_GOAL_Y - spot_radius;
+    int top_space = top_end - top_start;
+    int left_spot_y[5], right_spot_y[5];
+
+    for (int i = 0; i < n_top; ++i) {
+        left_spot_y[i]  = top_start + top_space * (2 * i + 1) / (2 * n_top);
+        right_spot_y[i] = left_spot_y[i];
+    }
+
+    // --- Bottom 3 spots with extra gap ---
+    float gap = 2 * spot_radius * (1 + extra_gap_factor);
+    int bot_area_start = LEFT_GOAL_Y + LEFT_GOAL_H + spot_radius;
+    int bot_area_end = FIELD_H - spot_radius;
+    float bot_area_space = bot_area_end - bot_area_start;
+    float base_y = bot_area_start + (bot_area_space - (gap * (n_bot-1))) / 2.0f;
+
+    for (int i = 0; i < n_bot; ++i) {
+        left_spot_y[n_top + i]  = (int)(base_y + i * gap);
+        right_spot_y[n_top + i] = left_spot_y[n_top + i];
+    }
+
+    // --- Draw the brown spots and colored circles ---
+    for (int i = 0; i < 5; ++i) {
+        // Draw brown spot (background)
+        draw_filled_circle(ren, left_spot_x,  left_spot_y[i], SPOT_RADIUS, brown);
+        // Draw colored circle (same radius, on top)
+        draw_filled_circle(ren, left_spot_x,  left_spot_y[i], SPOT_RADIUS, red);
+
+        draw_filled_circle(ren, right_spot_x, right_spot_y[i], SPOT_RADIUS, brown);
+        draw_filled_circle(ren, right_spot_x, right_spot_y[i], SPOT_RADIUS, blue);
+    }
+
+}
+
+
+
+
+
+
+
+void render_left_grid_and_disks(SDL_Renderer *ren) {
+    // Use LEFT_GRID_* constants and left_grid/left_disks arrays
+    int cell_w = (LEFT_GRID_RIGHT - LEFT_GRID_LEFT) / NUM_COLS;
+    int cell_h = (LEFT_GRID_BOTTOM - LEFT_GRID_TOP) / NUM_ROWS;
+    for (int i = 0; i < NUM_CELLS; ++i) {
+        SDL_Rect cell = {
+            left_grid[i].x - cell_w/2,
+            left_grid[i].y - cell_h/2,
+            cell_w, cell_h
+        };
+        SDL_SetRenderDrawColor(ren, 180, 180, 180, 90);
+        SDL_RenderDrawRect(ren, &cell);
+    }
+    // Draw setup spots (brown) if not covered by a disk
+    for (int i = 0; i < NUM_DISKS; ++i) {
+        if (left_disks[i].placed_cell == -1)
+            draw_filled_circle(ren, left_disks[i].start_x, left_disks[i].start_y, SPOT_RADIUS, brown);
+    }
+    // Draw disks
+    for (int i = 0; i < NUM_DISKS; ++i) {
+        draw_filled_circle(ren, left_disks[i].x, left_disks[i].y, SPOT_RADIUS, left_disks[i].color);
+    }
+}
+void render_right_grid_and_disks(SDL_Renderer *ren) {
+    // Use RIGHT_GRID_* constants and right_grid/right_disks arrays
+    int cell_w = (RIGHT_GRID_RIGHT - RIGHT_GRID_LEFT) / NUM_COLS;
+    int cell_h = (RIGHT_GRID_BOTTOM - RIGHT_GRID_TOP) / NUM_ROWS;
+    for (int i = 0; i < NUM_CELLS; ++i) {
+        SDL_Rect cell = {
+            right_grid[i].x - cell_w/2,
+            right_grid[i].y - cell_h/2,
+            cell_w, cell_h
+        };
+        SDL_SetRenderDrawColor(ren, 180, 180, 180, 90);
+        SDL_RenderDrawRect(ren, &cell);
+    }
+    // Draw setup spots (brown) if not covered by a disk
+    for (int i = 0; i < NUM_DISKS; ++i) {
+        if (right_disks[i].placed_cell == -1)
+            draw_filled_circle(ren, right_disks[i].start_x, right_disks[i].start_y, SPOT_RADIUS, brown);
+    }
+    // Draw disks
+    for (int i = 0; i < NUM_DISKS; ++i) {
+        draw_filled_circle(ren, right_disks[i].x, right_disks[i].y, SPOT_RADIUS, right_disks[i].color);
+    }
+}
+
+              
+
+
+
+
+
+// Handles mouse drag-and-drop for disks (only when grid is active)
+void handle_disk_drag_events(SDL_Event *e, int show_default_setup) {
+    static int drag_left_disk_idx = -1;
+    static int drag_right_disk_idx = -1;
+
+    // Only allow drag if we're in grid mode
+    if (show_default_setup != 0)
+        return;
+
+    // --- Left disks drag & drop ---
+    if (e->type == SDL_MOUSEBUTTONDOWN && e->button.button == SDL_BUTTON_LEFT) {
+        int mx = e->button.x, my = e->button.y;
+        for (int i = 0; i < NUM_DISKS; ++i) {
+            int dx = mx - left_disks[i].x, dy = my - left_disks[i].y;
+            if (dx*dx + dy*dy <= SPOT_RADIUS*SPOT_RADIUS) {
+                drag_left_disk_idx = i;
+                left_disks[i].is_dragged = 1;
+                if (left_disks[i].placed_cell != -1)
+                    left_grid[left_disks[i].placed_cell].occupied_by = -1;
+                break;
+            }
+        }
+    }
+    if (e->type == SDL_MOUSEMOTION && drag_left_disk_idx != -1) {
+        left_disks[drag_left_disk_idx].x = e->motion.x;
+        left_disks[drag_left_disk_idx].y = e->motion.y;
+    }
+    if (e->type == SDL_MOUSEBUTTONUP && e->button.button == SDL_BUTTON_LEFT && drag_left_disk_idx != -1) {
+        int mx = e->button.x, my = e->button.y;
+        int cell_found = -1;
+        for (int i = 0; i < NUM_CELLS; ++i) {
+            int dx = mx - left_grid[i].x, dy = my - left_grid[i].y;
+            if (dx*dx + dy*dy <= SPOT_RADIUS*SPOT_RADIUS && left_grid[i].occupied_by == -1) {
+                left_disks[drag_left_disk_idx].x = left_grid[i].x;
+                left_disks[drag_left_disk_idx].y = left_grid[i].y;
+                left_disks[drag_left_disk_idx].placed_cell = i;
+                left_grid[i].occupied_by = drag_left_disk_idx;
+                cell_found = i;
+                break;
+            }
+        }
+        if (cell_found == -1) {
+            left_disks[drag_left_disk_idx].x = left_disks[drag_left_disk_idx].start_x;
+            left_disks[drag_left_disk_idx].y = left_disks[drag_left_disk_idx].start_y;
+            left_disks[drag_left_disk_idx].placed_cell = -1;
+        }
+        left_disks[drag_left_disk_idx].is_dragged = 0;
+        drag_left_disk_idx = -1;
+    }
+
+    // --- Right disks drag & drop ---
+    if (e->type == SDL_MOUSEBUTTONDOWN && e->button.button == SDL_BUTTON_LEFT) {
+        int mx = e->button.x, my = e->button.y;
+        for (int i = 0; i < NUM_DISKS; ++i) {
+            int dx = mx - right_disks[i].x, dy = my - right_disks[i].y;
+            if (dx*dx + dy*dy <= SPOT_RADIUS*SPOT_RADIUS) {
+                drag_right_disk_idx = i;
+                right_disks[i].is_dragged = 1;
+                if (right_disks[i].placed_cell != -1)
+                    right_grid[right_disks[i].placed_cell].occupied_by = -1;
+                break;
+            }
+        }
+    }
+    if (e->type == SDL_MOUSEMOTION && drag_right_disk_idx != -1) {
+        right_disks[drag_right_disk_idx].x = e->motion.x;
+        right_disks[drag_right_disk_idx].y = e->motion.y;
+    }
+    if (e->type == SDL_MOUSEBUTTONUP && e->button.button == SDL_BUTTON_LEFT && drag_right_disk_idx != -1) {
+        int mx = e->button.x, my = e->button.y;
+        int cell_found = -1;
+        for (int i = 0; i < NUM_CELLS; ++i) {
+            int dx = mx - right_grid[i].x, dy = my - right_grid[i].y;
+            if (dx*dx + dy*dy <= SPOT_RADIUS*SPOT_RADIUS && right_grid[i].occupied_by == -1) {
+                right_disks[drag_right_disk_idx].x = right_grid[i].x;
+                right_disks[drag_right_disk_idx].y = right_grid[i].y;
+                right_disks[drag_right_disk_idx].placed_cell = i;
+                right_grid[i].occupied_by = drag_right_disk_idx;
+                cell_found = i;
+                break;
+            }
+        }
+        if (cell_found == -1) {
+            right_disks[drag_right_disk_idx].x = right_disks[drag_right_disk_idx].start_x;
+            right_disks[drag_right_disk_idx].y = right_disks[drag_right_disk_idx].start_y;
+            right_disks[drag_right_disk_idx].placed_cell = -1;
+        }
+        right_disks[drag_right_disk_idx].is_dragged = 0;
+        drag_right_disk_idx = -1;
+    }
+}
+
+
+
+
+
 
 int point_in_rect(int x, int y, SDL_Rect *rect) {
     return (x >= rect->x && x <= rect->x+rect->w &&
@@ -179,7 +476,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    Background *game_bg =  create_background(ren, "assets/textures/game-bg.png");
+    Background *game_bg =  create_background(ren, "assets/textures/game-bg-u.png");
     if (!game_bg) {
         destroy_background(bg);
         SDL_DestroyRenderer(ren);
@@ -235,6 +532,67 @@ int main(int argc, char *argv[])
     Uint32 state_timer = 0;       // timer for animation state
 
 
+
+
+
+
+
+     // ---- NEW: ADD THIS FLAG HERE ----
+    int show_default_setup = 1;   // 1 = show static setup, 0 = enable interactive placement
+
+    // ---- Grid Setup ----
+    // ---- Left Grid ----
+    int left_cell_w = (LEFT_GRID_RIGHT - LEFT_GRID_LEFT) / NUM_COLS;
+    int left_cell_h = (LEFT_GRID_BOTTOM - LEFT_GRID_TOP) / NUM_ROWS;
+    for (int row = 0; row < NUM_ROWS; ++row) {
+        for (int col = 0; col < NUM_COLS; ++col) {
+            int idx = row * NUM_COLS + col;
+            left_grid[idx].x = LEFT_GRID_LEFT + left_cell_w/2 + left_cell_w * col;
+            left_grid[idx].y = LEFT_GRID_TOP + left_cell_h/2 + left_cell_h * row;
+            left_grid[idx].occupied_by = -1;
+        }
+    }
+    // ---- Right Grid ----
+    int right_cell_w = (RIGHT_GRID_RIGHT - RIGHT_GRID_LEFT) / NUM_COLS;
+    int right_cell_h = (RIGHT_GRID_BOTTOM - RIGHT_GRID_TOP) / NUM_ROWS;
+    for (int row = 0; row < NUM_ROWS; ++row) {
+        for (int col = 0; col < NUM_COLS; ++col) {
+            int idx = row * NUM_COLS + col;
+            right_grid[idx].x = RIGHT_GRID_LEFT + right_cell_w/2 + right_cell_w * col;
+            right_grid[idx].y = RIGHT_GRID_TOP + right_cell_h/2 + right_cell_h * row;
+            right_grid[idx].occupied_by = -1;
+        }
+    }
+
+    // ---- Left Disks: setup spots in left yellow area ----
+    int left_setup_x = 140; // Pick the X for your left yellow setup bar
+    int left_setup_y_vals[NUM_DISKS] = {180, 280, 380, 480, 580}; // Adjust for visual
+    for (int i = 0; i < NUM_DISKS; ++i) {
+        left_disks[i].start_x = left_setup_x;
+        left_disks[i].start_y = left_setup_y_vals[i];
+        left_disks[i].x = left_setup_x;
+        left_disks[i].y = left_setup_y_vals[i];
+        left_disks[i].is_dragged = 0;
+        left_disks[i].placed_cell = -1;
+        left_disks[i].color = red;
+    }
+
+    // ---- Right Disks: setup spots in right yellow area ----
+    int right_setup_x = 1750; // Pick the X for your right yellow setup bar
+    int right_setup_y_vals[NUM_DISKS] = {180, 280, 380, 480, 580}; // Adjust for visual
+    for (int i = 0; i < NUM_DISKS; ++i) {
+        right_disks[i].start_x = right_setup_x;
+        right_disks[i].start_y = right_setup_y_vals[i];
+        right_disks[i].x = right_setup_x;
+        right_disks[i].y = right_setup_y_vals[i];
+        right_disks[i].is_dragged = 0;
+        right_disks[i].placed_cell = -1;
+        right_disks[i].color = blue;
+    }
+
+
+
+
     // Main loop
     while (running)
     {
@@ -250,6 +608,14 @@ int main(int argc, char *argv[])
             {
                 running = 0;
             }
+
+
+
+
+            if (state == STATE_GAME_RUNNING) handle_disk_drag_events(&e, show_default_setup);
+
+
+
 
             //use of esc button to go back or quit for convinience
             if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE && !fading_in && !fading_out) 
@@ -276,6 +642,19 @@ int main(int argc, char *argv[])
                     fading_out = 0;
                 }
             }
+
+
+
+
+
+
+            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_SPACE && state == STATE_GAME_RUNNING) {
+                show_default_setup = 0;
+            }
+
+
+
+
 
 
 
@@ -337,7 +716,6 @@ int main(int argc, char *argv[])
         // Render
         SDL_RenderClear(ren);
                                                                                         // render_background(ren, bg);
-                                                                                        
         switch (state) {
             case STATE_STARTUP_ANIMATION:
                 // --- [Draw Startup Animation: logo/text fade in/out] ---
@@ -468,6 +846,15 @@ int main(int argc, char *argv[])
 
             case STATE_GAME_RUNNING:
                 render_background(ren, game_bg);
+                if (show_default_setup) 
+                {
+                    render_player_zones_and_spots(ren);   // <--- Your default "static" positions
+                }
+                else
+                {
+                    render_left_grid_and_disks(ren);      // <--- Moveable disks in grid
+                    render_right_grid_and_disks(ren);
+                }
                 // --- [Start Your Game] ---
                 // Here, remove all menu/UI and run your game logic and rendering.
                 // Example: render_background(ren, bg); render_player(ren, ...); etc.
