@@ -74,6 +74,10 @@ typedef struct {
 int selected_left_disk  = -1;
 int selected_right_disk = -1;
 
+/* remembers where the disk was before the current drag starts */
+static int prev_left_cell  = -1;   /* –1 → came from setup bar */
+static int prev_right_cell = -1;   /* –1 → came from setup bar */
+
 typedef struct {
     int start_x, start_y;   /* initial setup position */
     int x, y;               /* live position while dragging */
@@ -334,171 +338,188 @@ void render_right_grid_and_disks(SDL_Renderer *ren)
 /* ---------------------------------------------------------------------------
    Handle dragging and dropping disks between grid cells (or back to setup)
    --------------------------------------------------------------------------- */
+/* ──────────────────────────────────────────────────────────────
+   Drag, drop, *and* click-to-select with snap-back behaviour
+   ────────────────────────────────────────────────────────────── */
 void handle_disk_drag_events(SDL_Event *e, int show_default_setup)
 {
-    static int drag_left_disk_idx  = -1;
-    static int drag_right_disk_idx = -1;
-    static int mouse_offset_x = 0, mouse_offset_y = 0;
+    /* index of the disk currently being dragged (-1 → none) */
+    static int drag_left_idx  = -1;
+    static int drag_right_idx = -1;
+    static int mouse_off_x = 0, mouse_off_y = 0;
 
-    int cell_w_left  = (LEFT_GRID_RIGHT  - LEFT_GRID_LEFT)  / NUM_COLS;
-    int cell_h_left  = (LEFT_GRID_BOTTOM - LEFT_GRID_TOP)   / NUM_ROWS;
-    int cell_w_right = (RIGHT_GRID_RIGHT - RIGHT_GRID_LEFT) / NUM_COLS;
-    int cell_h_right = (RIGHT_GRID_BOTTOM- RIGHT_GRID_TOP)  / NUM_ROWS;
+    int cwL = (LEFT_GRID_RIGHT  - LEFT_GRID_LEFT)  / NUM_COLS;
+    int chL = (LEFT_GRID_BOTTOM - LEFT_GRID_TOP ) / NUM_ROWS;
+    int cwR = (RIGHT_GRID_RIGHT - RIGHT_GRID_LEFT) / NUM_COLS;
+    int chR = (RIGHT_GRID_BOTTOM- RIGHT_GRID_TOP ) / NUM_ROWS;
 
-    /* --------------------------------------------------------------------
-       1) MOUSE DOWN  – handle selection, and (if allowed) start dragging
-       -------------------------------------------------------------------- */
-    if (e->type == SDL_MOUSEBUTTONDOWN && e->button.button == SDL_BUTTON_LEFT) {
+    /* ─────────────────────────────
+       1)  MOUSE BUTTON DOWN
+       ───────────────────────────── */
+    if (e->type == SDL_MOUSEBUTTONDOWN && e->button.button == SDL_BUTTON_LEFT)
+    {
         int mx = e->button.x, my = e->button.y;
-        int hit_left = -1, hit_right = -1;
+        int hitL = -1, hitR = -1;          /* which disk (if any) was clicked */
 
-        /* test all left disks */
+        /* scan LEFT disks first */
         for (int i = 0; i < NUM_DISKS; ++i) {
-            int cx, cy;
-            if (left_disks[i].placed_cell != -1) {
-                cx = left_grid[left_disks[i].placed_cell].x + cell_w_left / 2;
-                cy = left_grid[left_disks[i].placed_cell].y + cell_h_left / 2;
-            } else {
-                cx = left_disks[i].start_x;
-                cy = left_disks[i].start_y;
-            }
+            int cx = (left_disks[i].placed_cell != -1)
+                       ? left_grid[left_disks[i].placed_cell].x + cwL/2
+                       : left_disks[i].start_x;
+            int cy = (left_disks[i].placed_cell != -1)
+                       ? left_grid[left_disks[i].placed_cell].y + chL/2
+                       : left_disks[i].start_y;
             int dx = mx - cx, dy = my - cy;
-            if (dx*dx + dy*dy <= SPOT_RADIUS*SPOT_RADIUS) { hit_left = i; break; }
+            if (dx*dx + dy*dy <= SPOT_RADIUS*SPOT_RADIUS) { hitL = i; break; }
         }
 
-        /* test right disks only if nothing hit on left */
-        if (hit_left == -1) {
+        /* if nothing hit on left, scan RIGHT disks */
+        if (hitL == -1) {
             for (int i = 0; i < NUM_DISKS; ++i) {
-                int cx, cy;
-                if (right_disks[i].placed_cell != -1) {
-                    cx = right_grid[right_disks[i].placed_cell].x + cell_w_right / 2;
-                    cy = right_grid[right_disks[i].placed_cell].y + cell_h_right / 2;
-                } else {
-                    cx = right_disks[i].start_x;
-                    cy = right_disks[i].start_y;
-                }
+                int cx = (right_disks[i].placed_cell != -1)
+                           ? right_grid[right_disks[i].placed_cell].x + cwR/2
+                           : right_disks[i].start_x;
+                int cy = (right_disks[i].placed_cell != -1)
+                           ? right_grid[right_disks[i].placed_cell].y + chR/2
+                           : right_disks[i].start_y;
                 int dx = mx - cx, dy = my - cy;
-                if (dx*dx + dy*dy <= SPOT_RADIUS*SPOT_RADIUS) { hit_right = i; break; }
+                if (dx*dx + dy*dy <= SPOT_RADIUS*SPOT_RADIUS) { hitR = i; break; }
             }
         }
 
-        /* ---------- update selection ---------- */
-        if (hit_left != -1) {
-            selected_left_disk  = hit_left;
+        /* ---------- update selection state ---------- */
+        if (hitL != -1) {
+            selected_left_disk  = hitL;
             selected_right_disk = -1;
-        } else if (hit_right != -1) {
-            selected_right_disk = hit_right;
+        } else if (hitR != -1) {
+            selected_right_disk = hitR;
             selected_left_disk  = -1;
-        } else {
-            /* clicked empty space → clear selection */
+        } else {                       /* clicked empty space */
             selected_left_disk  = -1;
             selected_right_disk = -1;
         }
-        /* flag array entries */
         for (int i = 0; i < NUM_DISKS; ++i) {
             left_disks[i].selected  = (i == selected_left_disk);
             right_disks[i].selected = (i == selected_right_disk);
         }
 
         /* ---------- optional drag start ---------- */
-        int can_drag = (show_default_setup == 0);
-        if (can_drag && hit_left != -1) {
-            /* free old cell */
-            if (left_disks[hit_left].placed_cell != -1) {
-                left_grid[left_disks[hit_left].placed_cell].occupied_by = -1;
-                left_disks[hit_left].placed_cell = -1;
-            }
-            drag_left_disk_idx         = hit_left;
-            left_disks[hit_left].is_dragged = 1;
-            mouse_offset_x = mx - left_disks[hit_left].x;
-            mouse_offset_y = my - left_disks[hit_left].y;
-        } else if (can_drag && hit_right != -1) {
-            if (right_disks[hit_right].placed_cell != -1) {
-                right_grid[right_disks[hit_right].placed_cell].occupied_by = -1;
-                right_disks[hit_right].placed_cell = -1;
-            }
-            drag_right_disk_idx         = hit_right;
-            right_disks[hit_right].is_dragged = 1;
-            mouse_offset_x = mx - right_disks[hit_right].x;
-            mouse_offset_y = my - right_disks[hit_right].y;
+        if (show_default_setup == 0 && hitL != -1) {
+            drag_left_idx  = hitL;
+            mouse_off_x    = mx - left_disks[hitL].x;
+            mouse_off_y    = my - left_disks[hitL].y;
+
+            prev_left_cell = left_disks[hitL].placed_cell;      /* remember origin */
+            if (prev_left_cell != -1)
+                left_grid[prev_left_cell].occupied_by = -1;     /* free old cell */
+            left_disks[hitL].placed_cell = -1;
+            left_disks[hitL].is_dragged  = 1;
+        }
+        else if (show_default_setup == 0 && hitR != -1) {
+            drag_right_idx = hitR;
+            mouse_off_x    = mx - right_disks[hitR].x;
+            mouse_off_y    = my - right_disks[hitR].y;
+
+            prev_right_cell = right_disks[hitR].placed_cell;
+            if (prev_right_cell != -1)
+                right_grid[prev_right_cell].occupied_by = -1;
+            right_disks[hitR].placed_cell = -1;
+            right_disks[hitR].is_dragged  = 1;
         }
     }
 
-    /* --------------------------------------------------------------------
-       2) MOUSE MOTION  – only while dragging is allowed
-       -------------------------------------------------------------------- */
+    /* ─────────────────────────────
+       2)  MOUSE MOTION
+       ───────────────────────────── */
     if (show_default_setup == 0 && e->type == SDL_MOUSEMOTION) {
-        if (drag_left_disk_idx != -1) {
-            left_disks[drag_left_disk_idx].x = e->motion.x - mouse_offset_x;
-            left_disks[drag_left_disk_idx].y = e->motion.y - mouse_offset_y;
+        if (drag_left_idx != -1) {
+            left_disks[drag_left_idx].x = e->motion.x - mouse_off_x;
+            left_disks[drag_left_idx].y = e->motion.y - mouse_off_y;
         }
-        if (drag_right_disk_idx != -1) {
-            right_disks[drag_right_disk_idx].x = e->motion.x - mouse_offset_x;
-            right_disks[drag_right_disk_idx].y = e->motion.y - mouse_offset_y;
+        if (drag_right_idx != -1) {
+            right_disks[drag_right_idx].x = e->motion.x - mouse_off_x;
+            right_disks[drag_right_idx].y = e->motion.y - mouse_off_y;
         }
     }
 
-    /* --------------------------------------------------------------------
-       3) MOUSE UP  – drop (only matters if we were dragging)
-       -------------------------------------------------------------------- */
+    /* ─────────────────────────────
+       3)  MOUSE BUTTON UP
+       ───────────────────────────── */
     if (show_default_setup == 0 &&
-        e->type == SDL_MOUSEBUTTONUP && e->button.button == SDL_BUTTON_LEFT) {
-
+        e->type == SDL_MOUSEBUTTONUP && e->button.button == SDL_BUTTON_LEFT)
+    {
         int mx = e->button.x, my = e->button.y;
 
-        /* drop left disk */
-        if (drag_left_disk_idx != -1) {
-            int idx = drag_left_disk_idx;  drag_left_disk_idx = -1;
-            left_disks[idx].is_dragged = 0;
+        /* ----- LEFT drop ----- */
+        if (drag_left_idx != -1) {
+            int i = drag_left_idx; drag_left_idx = -1;
+            left_disks[i].is_dragged = 0;
 
-            int col = (mx - LEFT_GRID_LEFT) / cell_w_left;
-            int row = (my - LEFT_GRID_TOP ) / cell_h_left;
-            if ( col >= 0 && col < NUM_COLS &&
-                 row >= 0 && row < NUM_ROWS &&
-                 mx >= LEFT_GRID_LEFT && mx <= LEFT_GRID_RIGHT &&
-                 my >= LEFT_GRID_TOP  && my <= LEFT_GRID_BOTTOM ) {
+            int col = (mx - LEFT_GRID_LEFT)/cwL, row = (my - LEFT_GRID_TOP)/chL;
+            int good_cell =
+                col>=0 && col<NUM_COLS && row>=0 && row<NUM_ROWS &&
+                mx>=LEFT_GRID_LEFT && mx<=LEFT_GRID_RIGHT &&
+                my>=LEFT_GRID_TOP  && my<=LEFT_GRID_BOTTOM;
 
-                int target = row * NUM_COLS + col;
+            if (good_cell) {
+                int target = row*NUM_COLS + col;
                 if (left_grid[target].occupied_by == -1) {
-                    left_disks[idx].placed_cell   = target;
-                    left_grid[target].occupied_by = idx;
-                } else {
-                    left_disks[idx].x = left_disks[idx].start_x;
-                    left_disks[idx].y = left_disks[idx].start_y;
-                }
-            } else {
-                left_disks[idx].x = left_disks[idx].start_x;
-                left_disks[idx].y = left_disks[idx].start_y;
+                    left_disks[i].placed_cell   = target;
+                    left_grid[target].occupied_by = i;
+                } else good_cell = 0;   /* occupied */
             }
+
+            if (!good_cell) {          /* snap back */
+                if (prev_left_cell != -1 &&
+                    left_grid[prev_left_cell].occupied_by == -1) {
+                    left_disks[i].placed_cell   = prev_left_cell;
+                    left_grid[prev_left_cell].occupied_by = i;
+                    left_disks[i].x = left_grid[prev_left_cell].x + cwL/2;
+                    left_disks[i].y = left_grid[prev_left_cell].y + chL/2;
+                } else {
+                    left_disks[i].x = left_disks[i].start_x;
+                    left_disks[i].y = left_disks[i].start_y;
+                }
+            }
+            prev_left_cell = -1;
         }
 
-        /* drop right disk */
-        if (drag_right_disk_idx != -1) {
-            int idx = drag_right_disk_idx; drag_right_disk_idx = -1;
-            right_disks[idx].is_dragged = 0;
+        /* ----- RIGHT drop ----- */
+        if (drag_right_idx != -1) {
+            int i = drag_right_idx; drag_right_idx = -1;
+            right_disks[i].is_dragged = 0;
 
-            int col = (mx - RIGHT_GRID_LEFT) / cell_w_right;
-            int row = (my - RIGHT_GRID_TOP ) / cell_h_right;
-            if ( col >= 0 && col < NUM_COLS &&
-                 row >= 0 && row < NUM_ROWS &&
-                 mx >= RIGHT_GRID_LEFT && mx <= RIGHT_GRID_RIGHT &&
-                 my >= RIGHT_GRID_TOP  && my <= RIGHT_GRID_BOTTOM ) {
+            int col = (mx - RIGHT_GRID_LEFT)/cwR, row = (my - RIGHT_GRID_TOP)/chR;
+            int good_cell =
+                col>=0 && col<NUM_COLS && row>=0 && row<NUM_ROWS &&
+                mx>=RIGHT_GRID_LEFT && mx<=RIGHT_GRID_RIGHT &&
+                my>=RIGHT_GRID_TOP  && my<=RIGHT_GRID_BOTTOM;
 
-                int target = row * NUM_COLS + col;
+            if (good_cell) {
+                int target = row*NUM_COLS + col;
                 if (right_grid[target].occupied_by == -1) {
-                    right_disks[idx].placed_cell   = target;
-                    right_grid[target].occupied_by = idx;
-                } else {
-                    right_disks[idx].x = right_disks[idx].start_x;
-                    right_disks[idx].y = right_disks[idx].start_y;
-                }
-            } else {
-                right_disks[idx].x = right_disks[idx].start_x;
-                right_disks[idx].y = right_disks[idx].start_y;
+                    right_disks[i].placed_cell  = target;
+                    right_grid[target].occupied_by = i;
+                } else good_cell = 0;
             }
+
+            if (!good_cell) {
+                if (prev_right_cell != -1 &&
+                    right_grid[prev_right_cell].occupied_by == -1) {
+                    right_disks[i].placed_cell   = prev_right_cell;
+                    right_grid[prev_right_cell].occupied_by = i;
+                    right_disks[i].x = right_grid[prev_right_cell].x + cwR/2;
+                    right_disks[i].y = right_grid[prev_right_cell].y + chR/2;
+                } else {
+                    right_disks[i].x = right_disks[i].start_x;
+                    right_disks[i].y = right_disks[i].start_y;
+                }
+            }
+            prev_right_cell = -1;
         }
     }
 }
+
 
   
 
