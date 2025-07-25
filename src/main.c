@@ -13,6 +13,7 @@ typedef enum {
     STATE_MODE_SELECT,
     STATE_GAME_RUNNING,
     STATE_PAUSE_MENU,
+    STATE_GAME_RESULT,
     STATE_EXIT
 } GameState;
 
@@ -26,21 +27,28 @@ typedef struct {
 #define FIELD_H 720
 #define HOLD_ZONE_W 100   // (change if your yellow area is a different width)
 
-#define LEFT_GOAL_X 18
+#define LEFT_GOAL_X 16
 #define LEFT_GOAL_Y 273
 #define LEFT_GOAL_W 68
 #define LEFT_GOAL_H 175
 
-#define RIGHT_GOAL_X 1186
+#define RIGHT_GOAL_X 1188
 #define RIGHT_GOAL_Y 273
 #define RIGHT_GOAL_W 69
 #define RIGHT_GOAL_H 175
 
 #define SPOT_RADIUS 32
 
-// const SDL_Color BROWN = {90, 50, 20, 255};
-// const SDL_Color RED   = {220, 30, 30, 255};
-// const SDL_Color BLUE  = {30, 80, 220, 255};
+/* six wall rectangles */
+// SDL_Rect walls[6] = {
+//     {102,   0,  30, 408},   /* left-upper  vertical   */
+//     {102, 662,  30, 410},   /* left-lower  vertical   */
+//     {132,   0, 1640, 50},   /* top        horizontal */
+//     {132,1022, 1640, 50},   /* bottom     horizontal */
+//     {1772,  0,  30, 408},   /* right-upper vertical   */
+//     {1772,662,  30, 410}    /* right-lower vertical   */
+// };
+
 
 
 
@@ -99,7 +107,12 @@ PlayerDisk left_disks[NUM_DISKS];
 PlayerDisk right_disks[NUM_DISKS];
 
 
+int left_score  = 0;   /* Red  */
+int right_score = 0;   /* Blue */
 
+Button rematch_btn     = { { (1210-260)/2, 326, 320, 70 }, "Rematch",     0 };  /* 470-144 */
+Button selmode_btn     = { { (1210-260)/2, 416, 320, 70 }, "Select Mode", 0 };  /* 560-144 */
+Button quit_btn_result = { { (1210-260)/2, 506, 320, 70 }, "Quit",        0 };  /* 650-144 */
 
 void render_button(SDL_Renderer *ren, TTF_Font *font, Button *btn) {
     SDL_Color color = btn->hovered ? (SDL_Color){200,200,255,255} : (SDL_Color){255,255,255,255};
@@ -119,7 +132,7 @@ void render_button(SDL_Renderer *ren, TTF_Font *font, Button *btn) {
     SDL_DestroyTexture(tex);
 }
 
-void render_main_menu(SDL_Renderer *ren, TTF_Font *font, Button *play_btn, Button *quit_btn) {
+void render_main_menu(SDL_Renderer *ren, TTF_Font *font, Button *play_btn, Button *quit_btn_main) {
     // Draw heading (centered)
     SDL_Color white = {255,255,255,255};
     SDL_Surface *surf = TTF_RenderText_Blended(font, "Main Menu", white);
@@ -131,8 +144,18 @@ void render_main_menu(SDL_Renderer *ren, TTF_Font *font, Button *play_btn, Butto
     SDL_DestroyTexture(tex);
 
     // Draw buttons
-    render_button(ren, font, play_btn);
-    render_button(ren, font, quit_btn);
+    /* --- draw Play & Quit buttons — dynamically centred --- */
+    Button tmp;
+
+    /* Play */
+    tmp = *play_btn;
+    tmp.rect.x = (1280 - tmp.rect.w) / 2;
+    render_button(ren, font, &tmp);
+
+    /* Quit */
+    tmp = *quit_btn_main;
+    tmp.rect.x = (1280 - tmp.rect.w) / 2;
+    render_button(ren, font, &tmp);
 }
 void render_mode_menu(SDL_Renderer *ren, TTF_Font *font, Button *single_btn, Button *multi_btn, Button *back_btn) {
     // Draw heading
@@ -146,11 +169,25 @@ void render_mode_menu(SDL_Renderer *ren, TTF_Font *font, Button *single_btn, But
     SDL_DestroyTexture(tex);
 
     // Draw buttons
-    render_button(ren, font, single_btn);
-    render_button(ren, font, multi_btn);
-    render_button(ren, font, back_btn);
+    /* --- draw Single-player, Multi-player, Back buttons – centred every frame --- */
+    Button tmp;
+
+    /* Single Player */
+    tmp = *single_btn;
+    tmp.rect.x = (1280 - tmp.rect.w) / 2;
+    render_button(ren, font, &tmp);
+
+    /* Multiplayer */
+    tmp = *multi_btn;
+    tmp.rect.x = (1280 - tmp.rect.w) / 2;
+    render_button(ren, font, &tmp);
+
+    /* Back */
+    tmp = *back_btn;
+    tmp.rect.x = (1280 - tmp.rect.w) / 2;
+    render_button(ren, font, &tmp);
 }
-void render_pause_menu(SDL_Renderer *ren, TTF_Font *font, Button *resume_btn, Button *restart_btn, Button *quitgame_btn) {
+void render_pause_menu(SDL_Renderer *ren, TTF_Font *font, Button *resume_btn, Button *restart_btn, Button *quitmatch_btn) {
     // Dim the background
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 180);
@@ -159,19 +196,75 @@ void render_pause_menu(SDL_Renderer *ren, TTF_Font *font, Button *resume_btn, Bu
 
     // Heading
     SDL_Color white = {255,255,255,255};
-    SDL_Surface *surf = TTF_RenderText_Blended(font, "Paused", white);
+    SDL_Surface *surf = TTF_RenderText_Blended(font, "Match Paused", white);
     SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, surf);
+
+    /* X-centre stays (1280-tw)/2; new Y-pos = midway between scoreboard and buttons */
+    const int scoreboard_y   = 6;    /* where render_scoreboard() puts it   */
+    const int scoreboard_h   = 72;   /* height you set in render_scoreboard */
+    const int scoreboard_bot = scoreboard_y + scoreboard_h;
+    const int first_buttonY  = 250;  /* y-pos of Resume button              */
+
     int tw = surf->w, th = surf->h;
-    SDL_Rect dst = { (1280-tw)/2, 120, tw, th };
+    SDL_Rect dst = { (1280-tw)/2, scoreboard_bot + (first_buttonY - scoreboard_bot - th) / 2, tw, th };
     SDL_RenderCopy(ren, tex, NULL, &dst);
     SDL_FreeSurface(surf);
     SDL_DestroyTexture(tex);
 
-    render_button(ren, font, resume_btn);
-    render_button(ren, font, restart_btn);
-    render_button(ren, font, quitgame_btn);
+ /* ---- draw the three buttons, x-centred on the fly ---- */
+    Button tmp;
+
+    tmp = *resume_btn;
+    tmp.rect.x = (1280 - tmp.rect.w) / 2;
+    render_button(ren, font, &tmp);
+
+    tmp = *restart_btn;
+    tmp.rect.x = (1280 - tmp.rect.w) / 2;
+    render_button(ren, font, &tmp);
+
+    tmp = *quitmatch_btn;
+    tmp.rect.x = (1280 - tmp.rect.w) / 2;
+    render_button(ren, font, &tmp);
 }
 
+static void render_scoreboard(SDL_Renderer *ren, TTF_Font *font,
+                              int red_score, int blue_score);
+
+static void render_game_result(SDL_Renderer *ren, TTF_Font *font,
+                               int l_score, int r_score)
+{
+    render_scoreboard(ren, font, l_score, r_score);
+
+    /* --- top 60 % area: winner / loser text + scoreboard --- */
+    const SDL_Color black = {0, 0, 0, 255};
+    char title[32];
+
+    if (l_score > r_score)       strcpy(title, "Red Wins!");
+    else if (r_score > l_score)  strcpy(title, "Blue Wins!");
+    else                         strcpy(title, "Match Drawn");
+
+    SDL_Surface *surf = TTF_RenderText_Blended(font, title, black);
+    SDL_Texture *tex  = SDL_CreateTextureFromSurface(ren, surf);
+
+    const int scoreboard_y   = 6;    /* y where render_scoreboard() draws */
+    const int scoreboard_h   = 72;   /* its height                       */
+    const int scoreboard_bot = scoreboard_y + scoreboard_h;
+    const int first_buttonY  = rematch_btn.rect.y;  /* y of the Rematch button          */
+
+    int tw = surf->w, th = surf->h;
+    SDL_Rect dst = {
+        (1280 - tw) / 2,
+        scoreboard_bot + (first_buttonY - scoreboard_bot - th) / 2 ,
+        tw, th
+    };
+    SDL_RenderCopy(ren, tex, NULL, &dst);
+    SDL_FreeSurface(surf); 
+    SDL_DestroyTexture(tex);
+
+    render_button(ren, font, &rematch_btn);
+    render_button(ren, font, &selmode_btn);
+    render_button(ren, font, &quit_btn_result);
+}
 void render_fade(SDL_Renderer *ren, int alpha) {
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(ren, 0, 0, 0, alpha);
@@ -190,9 +283,89 @@ void draw_filled_circle(SDL_Renderer *ren, int cx, int cy, int radius, SDL_Color
     }
 }
 
+static inline void render_walls(SDL_Renderer *ren)
+{
+    // SDL_SetRenderDrawColor(ren, 184, 134, 11, 255);   /* dark yellow */
+    // for (int i = 0; i < 6; ++i) SDL_RenderFillRect(ren, &walls[i]);
+}
+
+/* draw goals with 20-px deep-tone border + lighter fill */
+/* draw goals – open on one vertical side */
+/* draw goals with mixed-tone 10-px borders */
+static void render_goals(SDL_Renderer *ren)
+{
+    const int inset = 10;                       /* border thickness */
+
+    /* colour presets */
+    const SDL_Color deepRed    = {200, 0,   0,   255};
+    const SDL_Color shallowRed = {255, 70,  70,  255};
+    const SDL_Color deepBlue   = {0,   0,   200, 255};
+    const SDL_Color shallowBlue= {70,  70,  255, 255};
+
+    /* ---------- LEFT (RED) GOAL ---------- */
+    SDL_Rect L_outer = {LEFT_GOAL_X, LEFT_GOAL_Y, LEFT_GOAL_W, LEFT_GOAL_H};
+    SDL_Rect L_inner = {LEFT_GOAL_X + inset, LEFT_GOAL_Y + inset,
+                        LEFT_GOAL_W - 2*inset, LEFT_GOAL_H - 2*inset};
+
+    /* shallow red fill */
+    SDL_SetRenderDrawColor(ren, shallowRed.r, shallowRed.g, shallowRed.b, 255);
+    SDL_RenderFillRect(ren, &L_inner);
+
+    /* deep red top border */
+    SDL_SetRenderDrawColor(ren, deepRed.r, deepRed.g, deepRed.b, 255);
+    SDL_Rect L_top = {L_outer.x, L_outer.y, L_outer.w, inset};
+    SDL_RenderFillRect(ren, &L_top);
+
+    /* deep red bottom border */
+    SDL_Rect L_bot = {L_outer.x, L_outer.y + L_outer.h - inset, L_outer.w, inset};
+    SDL_RenderFillRect(ren, &L_bot);
+
+    /* deep red left border */
+    SDL_Rect L_left = {L_outer.x, L_outer.y, inset, L_outer.h};
+    SDL_RenderFillRect(ren, &L_left);
+
+    /* shallow red right border */
+    SDL_SetRenderDrawColor(ren, shallowRed.r, shallowRed.g, shallowRed.b, 255);
+    SDL_Rect L_right = {L_outer.x + L_outer.w - inset, L_outer.y, inset, L_outer.h};
+    SDL_RenderFillRect(ren, &L_right);
+
+    /* ---------- RIGHT (BLUE) GOAL ---------- */
+    SDL_Rect R_outer = {RIGHT_GOAL_X, RIGHT_GOAL_Y, RIGHT_GOAL_W, RIGHT_GOAL_H};
+    SDL_Rect R_inner = {RIGHT_GOAL_X + inset, RIGHT_GOAL_Y + inset,
+                        RIGHT_GOAL_W - 2*inset, RIGHT_GOAL_H - 2*inset};
+
+    /* shallow blue fill */
+    SDL_SetRenderDrawColor(ren, shallowBlue.r, shallowBlue.g, shallowBlue.b, 255);
+    SDL_RenderFillRect(ren, &R_inner);
+
+    /* deep blue top border */
+    SDL_SetRenderDrawColor(ren, deepBlue.r, deepBlue.g, deepBlue.b, 255);
+    SDL_Rect R_top = {R_outer.x, R_outer.y, R_outer.w, inset};
+    SDL_RenderFillRect(ren, &R_top);
+
+    /* deep blue bottom border */
+    SDL_Rect R_bot = {R_outer.x, R_outer.y + R_outer.h - inset, R_outer.w, inset};
+    SDL_RenderFillRect(ren, &R_bot);
+
+    /* shallow blue left border */
+    SDL_SetRenderDrawColor(ren, shallowBlue.r, shallowBlue.g, shallowBlue.b, 255);
+    SDL_Rect R_left = {R_outer.x, R_outer.y, inset, R_outer.h};
+    SDL_RenderFillRect(ren, &R_left);
+
+    /* deep blue right border */
+    SDL_SetRenderDrawColor(ren, deepBlue.r, deepBlue.g, deepBlue.b, 255);
+    SDL_Rect R_right = {R_outer.x + R_outer.w - inset, R_outer.y, inset, R_outer.h};
+    SDL_RenderFillRect(ren, &R_right);
+}
+
+
+
+
 
 // initial draw and placement
 void render_player_zones_and_spots(SDL_Renderer *ren) {
+    render_goals(ren); 
+
     //printf("SPOT_RADIUS = %d\n", SPOT_RADIUS);
     const int spot_radius = 40;
     const float extra_gap_factor = 0.2f; // 20% of radius
@@ -204,15 +377,15 @@ void render_player_zones_and_spots(SDL_Renderer *ren) {
     SDL_Color blue  = {30, 80, 220, 255};
 
     // Draw goal rectangles (filled black)
-    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
-    SDL_Rect left_goal  = {LEFT_GOAL_X, LEFT_GOAL_Y, LEFT_GOAL_W, LEFT_GOAL_H};
-    SDL_Rect right_goal = {RIGHT_GOAL_X, RIGHT_GOAL_Y, RIGHT_GOAL_W, RIGHT_GOAL_H};
-    SDL_RenderFillRect(ren, &left_goal);
-    SDL_RenderFillRect(ren, &right_goal);
+    // SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    // SDL_Rect left_goal  = {LEFT_GOAL_X, LEFT_GOAL_Y, LEFT_GOAL_W, LEFT_GOAL_H};
+    // SDL_Rect right_goal = {RIGHT_GOAL_X, RIGHT_GOAL_Y, RIGHT_GOAL_W, RIGHT_GOAL_H};
+    // SDL_RenderFillRect(ren, &left_goal);
+    // SDL_RenderFillRect(ren, &right_goal);
 
     // --- Spot X positions (center of yellow area at each side) ---
-    int left_spot_x  = LEFT_GOAL_X + LEFT_GOAL_W / 2 - (int)(0.080f * HOLD_ZONE_W);   // 10% more left
-    int right_spot_x = RIGHT_GOAL_X + RIGHT_GOAL_W / 2 + (int)(0.080f * HOLD_ZONE_W); // 10% more right
+    int left_spot_x  = LEFT_GOAL_X + LEFT_GOAL_W / 2 - (int)(0.080f * HOLD_ZONE_W) -5;   // 10% more left + 5 more left
+    int right_spot_x = RIGHT_GOAL_X + RIGHT_GOAL_W / 2 + (int)(0.080f * HOLD_ZONE_W) +5; // 10% more right +5 more right 
 
 
     // --- Top 2 spots ---
@@ -521,7 +694,88 @@ void handle_disk_drag_events(SDL_Event *e, int show_default_setup)
 }
 
 
-  
+
+
+
+/* ---------------------------------------------------------------------
+   Render a centred “Red  |score| |score|  Blue” scoreboard bar.
+   - height: 48 px
+   - label blocks: 120 px wide
+   - score blocks:  48 px wide (square)
+   --------------------------------------------------------------------- */
+/* ------------------------------------------------------------------
+    Centred scoreboard:
+   [  Red  ] [ 00 ] [ 00 ] [  Blue  ]
+   - height: 72 px  (1.5× the old 48)
+   - score squares: 72×72 → plenty of room for two digits
+   - 2-px black border on every block
+   ------------------------------------------------------------------ */
+static void render_scoreboard(SDL_Renderer *ren, TTF_Font *font,
+                              int red_score, int blue_score)
+{
+    /* layout constants */
+    const int block_h   = 72;          /* common height  */
+    const int label_w   = 120;         /* “Red” / “Blue” */
+    const int square_w  = block_h;     /* score squares  */
+    const int border_px = 2;           /* thicker border */
+    const SDL_Color vio = {148, 0, 211, 255};          /* violet fill */
+    const SDL_Color txt = {  0, 0,   0, 255};          /* black text  */
+
+    /* total bar width and origin for horizontal centering */
+    const int total_w = label_w + square_w + square_w + label_w;
+    const SDL_Point origin = { (1280 - total_w) / 2, 6 };    /* top-centre */
+
+    /* block rectangles */
+    SDL_Rect blk[4] = {
+        { origin.x,                       origin.y, label_w,  block_h },  /* Red label   */
+        { origin.x + label_w,             origin.y, square_w, block_h },  /* Red score   */
+        { origin.x + label_w + square_w,  origin.y, square_w, block_h },  /* Blue score  */
+        { origin.x + label_w + 2*square_w,origin.y, label_w,  block_h }   /* Blue label  */
+    };
+
+    /* fill background */
+    SDL_SetRenderDrawColor(ren, vio.r, vio.g, vio.b, vio.a);
+    for (int i = 0; i < 4; ++i) SDL_RenderFillRect(ren, &blk[i]);
+
+    /* 2-px border: draw two nested 1-px rects */
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    for (int i = 0; i < 4; ++i)
+        for (int t = 0; t < border_px; ++t) {
+            SDL_Rect r = { blk[i].x + t, blk[i].y + t,
+                           blk[i].w - 2*t, blk[i].h - 2*t };
+            SDL_RenderDrawRect(ren, &r);
+        }
+
+    /* ----- helper to centre any text surface in a rect ----- */
+    #define BLIT_TEXT(text, target_rect)                        \
+        do {                                                    \
+            SDL_Surface *s = TTF_RenderText_Blended(font, text, txt); \
+            SDL_Texture *tx = SDL_CreateTextureFromSurface(ren, s);   \
+            SDL_Rect dst = { (target_rect).x + ((target_rect).w - s->w)/2, \
+                             (target_rect).y + ((target_rect).h - s->h)/2, \
+                             s->w, s->h };                      \
+            SDL_RenderCopy(ren, tx, NULL, &dst);                \
+            SDL_FreeSurface(s); SDL_DestroyTexture(tx);         \
+        } while (0)
+
+    /* render labels and scores */
+    BLIT_TEXT("Red",  blk[0]);
+
+    char buf[4];
+    snprintf(buf, sizeof(buf), "%d", red_score);   /* supports 0-99 */
+    BLIT_TEXT(buf,  blk[1]);
+
+    snprintf(buf, sizeof(buf), "%d", blue_score);
+    BLIT_TEXT(buf,  blk[2]);
+
+    BLIT_TEXT("Blue", blk[3]);
+
+    #undef BLIT_TEXT
+}
+
+
+
+
 
 
 
@@ -631,18 +885,24 @@ int main(int argc, char *argv[])
     // --- [Button Declarations] ---
 
     // main menu buttons
-    Button play_btn = { { (1280-220)/2, 280, 220, 70 }, "Play", 0 };
-    Button quit_btn = { { (1280-220)/2, 380, 220, 70 }, "Quit", 0 };
+    Button play_btn      = { { (1280-220)/2, 280, 220, 70 }, "Play", 0 };
+    Button quit_btn_main = { { (1280-220)/2, 380, 220, 70 }, "Quit", 0 };
 
     // Mode menu buttons (BIGGER & CENTERED)
     Button single_btn = { { (1280-350)/2, 240, 350, 80 }, "Single Player", 0 };
     Button multi_btn  = { { (1280-350)/2, 350, 350, 80 }, "Multiplayer", 0 };
-    Button back_btn   = { { (1280-180)/2, 470, 180, 55 }, "Back", 0 };
+    Button back_btn   = { { (1280-180)/2, 470, 180, 80 }, "Back", 0 };
 
     // pause menu buttons
-    Button resume_btn = { { (1280-220)/2, 250, 220, 70 }, "Resume", 0 };
-    Button restart_btn = { { (1280-220)/2, 350, 220, 70 }, "Restart", 0 };
-    Button quitgame_btn = { { (1280-220)/2, 450, 220, 70 }, "Quit", 0 };
+    Button resume_btn    = { { (1280-220)/2, 250, 280, 70 }, "Resume", 0 };
+    Button restart_btn   = { { (1280-220)/2, 350, 280, 70 }, "Restart", 0 };
+    Button quitmatch_btn = { { (1280-220)/2, 450, 280, 70 }, "Quit Match", 0 };
+
+    /* ---- game-result buttons ---- */ //---------->moved to global
+    // Button rematch_btn     = { { (1280-260)/2, 470, 260, 70 }, "Rematch",    0 };
+    // Button selmode_btn     = { { (1280-260)/2, 560, 260, 70 }, "Select Mode",0 };
+    // Button quit_btn_result = { { (1280-260)/2, 650, 260, 70 }, "Quit",       0 };
+
 
     // --- [Fade Speed & Next State] ---
     float fade_speed = 300.0f; // You can adjust for faster/slower fade
@@ -697,8 +957,8 @@ int main(int argc, char *argv[])
     const int n_top = 2, n_bot = 3;  
     
     // Calculate positions exactly as in render_player_zones_and_spots  
-    int left_spot_x  = LEFT_GOAL_X + LEFT_GOAL_W / 2 - (int)(0.080f * HOLD_ZONE_W);  
-    int right_spot_x = RIGHT_GOAL_X + RIGHT_GOAL_W / 2 + (int)(0.080f * HOLD_ZONE_W);  
+    int left_spot_x  = LEFT_GOAL_X + LEFT_GOAL_W / 2 - (int)(0.080f * HOLD_ZONE_W) -5;  
+    int right_spot_x = RIGHT_GOAL_X + RIGHT_GOAL_W / 2 + (int)(0.080f * HOLD_ZONE_W) +5;  
     
     // Top 2 spots  
     int top_start = spot_radius;  
@@ -749,290 +1009,319 @@ int main(int argc, char *argv[])
 
         // Handle events
         while (SDL_PollEvent(&e))
-        {   
-            // If user clicks red cross (window close)
-            if (e.type == SDL_QUIT)
-            {
+        {
+            /* ------------------------------------------------------------------
+            Window close (red X)
+            ------------------------------------------------------------------ */
+            if (e.type == SDL_QUIT) {
                 running = 0;
             }
 
+            /* ------------------------------------------------------------------
+            Drag-and-drop disks (only while playing)
+            ------------------------------------------------------------------ */
+            if (state == STATE_GAME_RUNNING)
+                handle_disk_drag_events(&e, show_default_setup);
 
-
-
-            if (state == STATE_GAME_RUNNING) handle_disk_drag_events(&e, show_default_setup);
-
-
-
-
-            //use of esc button to go back or quit for convinience
-            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE && !fading_in && !fading_out) 
+            /* ------------------------------------------------------------------
+            ESC key: menu back / pause toggle
+            ------------------------------------------------------------------ */
+            if (e.type == SDL_KEYDOWN &&
+                e.key.keysym.sym == SDLK_ESCAPE &&
+                !fading_in && !fading_out)
             {
-                if (state == STATE_MAIN_MENU) {
+                switch (state) {
+                case STATE_MAIN_MENU:
                     fading_out = 1;
                     next_state = STATE_EXIT;
-                } 
-                else if (state == STATE_MODE_SELECT) {
+                    break;
+
+                case STATE_MODE_SELECT:
                     fading_out = 1;
                     next_state = STATE_MAIN_MENU;
-                }
-                else if (state == STATE_GAME_RUNNING) {
-                    state = STATE_PAUSE_MENU;
-                    // Reset fade flags so pause menu is instantly visible and responsive
-                    fade_alpha = 0;
-                    fading_in = 0;
-                    fading_out = 0;
-                }
-                else if (state == STATE_PAUSE_MENU) {
-                    state = STATE_GAME_RUNNING;
-                    fade_alpha = 0;
-                    fading_in = 0;
-                    fading_out = 0;
+                    break;
+
+                case STATE_GAME_RUNNING:   /* pause the match */
+                    state       = STATE_PAUSE_MENU;
+                    fade_alpha  = 0;
+                    fading_in   = 0;
+                    fading_out  = 0;
+                    break;
+
+                case STATE_PAUSE_MENU:     /* resume play */
+                    state       = STATE_GAME_RUNNING;
+                    fade_alpha  = 0;
+                    fading_in   = 0;
+                    fading_out  = 0;
+                    break;
+
+                default:                   /* ESC does nothing in other states */
+                    break;
                 }
             }
 
-
-
-
-
-
-            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_SPACE && state == STATE_GAME_RUNNING) {
+            /* ------------------------------------------------------------------
+            SPACE key: switch from default setup to interactive placement
+            ------------------------------------------------------------------ */
+            if (e.type == SDL_KEYDOWN &&
+                e.key.keysym.sym == SDLK_SPACE &&
+                state == STATE_GAME_RUNNING)
+            {
                 show_default_setup = 0;
             }
 
-
-
-
-
-
-
-            //Checks if the left mouse button was pressed.
-            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) 
+            /* ------------------------------------------------------------------
+            Mouse clicks (left button)
+            ------------------------------------------------------------------ */
+            if (e.type == SDL_MOUSEBUTTONDOWN &&
+                e.button.button == SDL_BUTTON_LEFT)
             {
-                //retrieves the mouse x and y coordinates (mx, my) where the click happened.
-                int mx = e.button.x, my = e.button.y;
+                int mx = e.button.x;
+                int my = e.button.y;
 
-                //Checks if you are on the main menu and not currently fading in or out.
-                if (state == STATE_MAIN_MENU && !fading_in && !fading_out) 
-                {   
-                    //If Play button clicked
+                /* ---- MAIN MENU ------------------------------------------------ */
+                if (state == STATE_MAIN_MENU && !fading_in && !fading_out) {
                     if (point_in_rect(mx, my, &play_btn.rect)) {
-                        fading_out = 1;  // Start fade out
+                        fading_out = 1;
                         next_state = STATE_MODE_SELECT;
                     }
-                    //If quit button clicked 
-                    else if (point_in_rect(mx, my, &quit_btn.rect)) {
+                    else if (point_in_rect(mx, my, &quit_btn_main.rect)) {
                         fading_out = 1;
                         next_state = STATE_EXIT;
                     }
                 }
 
-                //Checks if you are on the mode select menu (choose single/multi) and not in a transition.
-                else if (state == STATE_MODE_SELECT && !fading_in && !fading_out) 
-                {   
-                    //if Single or Multiplayer button clicked
+                /* ---- MODE-SELECT MENU ---------------------------------------- */
+                else if (state == STATE_MODE_SELECT && !fading_in && !fading_out) {
                     if (point_in_rect(mx, my, &single_btn.rect) ||
-                        point_in_rect(mx, my, &multi_btn.rect)) {
+                        point_in_rect(mx, my, &multi_btn.rect))
+                    {
                         fading_out = 1;
                         next_state = STATE_GAME_RUNNING;
                     }
-                    //if back button clicked
                     else if (point_in_rect(mx, my, &back_btn.rect)) {
                         fading_out = 1;
                         next_state = STATE_MAIN_MENU;
                     }
                 }
-                else if (state == STATE_PAUSE_MENU && !fading_in && !fading_out) 
-                {
+
+                /* ---- PAUSE MENU ---------------------------------------------- */
+                else if (state == STATE_PAUSE_MENU && !fading_in && !fading_out) {
                     if (point_in_rect(mx, my, &resume_btn.rect)) {
                         state = STATE_GAME_RUNNING;
                     }
                     else if (point_in_rect(mx, my, &restart_btn.rect)) {
-                        // TODO: Add game state reset logic here
+                        /* TODO: reset game state here */
                         state = STATE_GAME_RUNNING;
                     }
-                    else if (point_in_rect(mx, my, &quitgame_btn.rect)) {
+                    else if (point_in_rect(mx, my, &quitmatch_btn.rect)) {
                         fading_out = 1;
-                        next_state = STATE_MAIN_MENU;
+                        next_state = STATE_GAME_RESULT;
                     }
                 }
 
+                /* ---- GAME-RESULT SCREEN -------------------------------------- */
+                else if (state == STATE_GAME_RESULT && !fading_in && !fading_out) {
+                    if (point_in_rect(mx, my, &rematch_btn.rect)) {
+                        left_score  = 0;
+                        right_score = 0;
+                        /* TODO: reset board/disks here */
+                        fading_out = 1;
+                        next_state = STATE_GAME_RUNNING;
+                    }
+                    else if (point_in_rect(mx, my, &selmode_btn.rect)) {
+                        fading_out = 1;
+                        next_state = STATE_MODE_SELECT;
+                    }
+                    else if (point_in_rect(mx, my, &quit_btn_result.rect)) {
+                        fading_out = 1;
+                        next_state = STATE_EXIT;
+                    }
+                }
             }
-
         }
+
 
         // Render
         SDL_RenderClear(ren);
                                                                                         // render_background(ren, bg);
-        switch (state) {
-            case STATE_STARTUP_ANIMATION:
-                // --- [Draw Startup Animation: logo/text fade in/out] ---
-                // Example: Draw a logo/text in the center
-                {
-                    SDL_Color white = {255,255,255,255};
+        switch (state) 
+        {
+            /* ──────────────────  STARTUP  ────────────────── */
+            case STATE_STARTUP_ANIMATION: {
+                    /* logo in the centre */
+                    SDL_Color white = {255, 255, 255, 255};
                     SDL_Surface *surf = TTF_RenderText_Blended(font, "NO BALL FOOTBALL!", white);
-                    SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, surf);
+                    SDL_Texture *tex  = SDL_CreateTextureFromSurface(ren, surf);
                     int tw = surf->w, th = surf->h;
-                    SDL_Rect dst = { (1280-tw)/2, (720-th)/2, tw, th };
+                    SDL_Rect dst = { (1280 - tw) / 2, (720 - th) / 2, tw, th };
                     SDL_RenderCopy(ren, tex, NULL, &dst);
-                    SDL_FreeSurface(surf);
-                    SDL_DestroyTexture(tex);
-                }
+                    SDL_FreeSurface(surf); SDL_DestroyTexture(tex);
 
-                // Fade in, then after delay, fade out
-                if (fading_in) {
-                    fade_alpha -= (int)(fade_speed * (delta_time / 1000.0f));
-                    if (fade_alpha <= 0) {
-                        fade_alpha = 0;
-                        fading_in = 0;
-                        state_timer = SDL_GetTicks(); // Start delay
+                    /* fade-in / hold / fade-out */
+                    if (fading_in) {
+                        fade_alpha -= (int)(fade_speed * (delta_time / 1000.0f));
+                        if (fade_alpha <= 0) { fade_alpha = 0; fading_in = 0; state_timer = SDL_GetTicks(); }
+                    } else if (!fading_out && SDL_GetTicks() - state_timer > 1000) {
+                        fading_out = 1;
                     }
-                }
-                else if (!fading_out && SDL_GetTicks() - state_timer > 1000) { // 1 sec delay
-                    fading_out = 1;
-                }
-                if (fading_out) {
-                    fade_alpha += (int)(fade_speed * (delta_time / 1000.0f));
-                    if (fade_alpha >= 255) {
-                        fade_alpha = 255;
-                        fading_out = 0;
-                        fading_in = 1;
-                        state = STATE_MAIN_MENU;
-                        fade_alpha = 255;
-                    }
-                }
-                render_fade(ren, fade_alpha);
-                break;
-
-            case STATE_MAIN_MENU:
-                // --- [Draw Background] ---
-                render_background(ren, bg);
-
-                // --- [Draw Main Menu Heading] ---
-                SDL_Color white = {255,255,255,255};
-                SDL_Surface *surf = TTF_RenderText_Blended(font, "Main Menu", white);
-                SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, surf);
-                int tw = surf->w, th = surf->h;
-                SDL_Rect dst = { (1280-tw)/2, 120, tw, th };
-                SDL_RenderCopy(ren, tex, NULL, &dst);
-                SDL_FreeSurface(surf);
-                SDL_DestroyTexture(tex);
-
-                // --- [Draw Play & Quit Buttons] ---
-                render_button(ren, font, &play_btn);
-                render_button(ren, font, &quit_btn);
-
-                // --- [Fade Logic] ---
-                if (fading_in) {
-                    fade_alpha -= (int)(fade_speed * (delta_time / 1000.0f));
-                    if (fade_alpha <= 0) { fade_alpha = 0; fading_in = 0; }
-                }
-                if (fading_out) 
-                {
-                    fade_alpha += (int)(fade_speed * (delta_time / 1000.0f));
-                    if (fade_alpha >= 255) {
-                        fade_alpha = 255;
-                        fading_out = 0;
-
-                        // Only fade in for menus, not for game running
-                        if (next_state == STATE_GAME_RUNNING) {
-                            fading_in = 0;
-                        } else {
-                            fading_in = 1;
+                    if (fading_out) {
+                        fade_alpha += (int)(fade_speed * (delta_time / 1000.0f));
+                        if (fade_alpha >= 255) {
                             fade_alpha = 255;
+                            fading_out = 0;
+                            fading_in  = 1;
+                            state      = STATE_MAIN_MENU;
                         }
-                        state = next_state;
                     }
+                    render_fade(ren, fade_alpha);
+                    break;
                 }
-                render_fade(ren, fade_alpha);
-                break;
 
-            case STATE_MODE_SELECT:
-                // --- [Draw Background] ---
-                render_background(ren, bg);
+            /* ──────────────────  MAIN MENU  ────────────────── */
+            case STATE_MAIN_MENU: {
+                    render_background(ren, bg);
 
-                // --- [Draw Mode Menu Heading] ---
-                {
-                    SDL_Color white = {255,255,255,255};
+                    SDL_Color white = {255, 255, 255, 255};
+                    SDL_Surface *surf = TTF_RenderText_Blended(font, "Main Menu", white);
+                    SDL_Texture *tex  = SDL_CreateTextureFromSurface(ren, surf);
+                    int tw = surf->w, th = surf->h;
+                    SDL_Rect dst = { (1280 - tw) / 2, 120, tw, th };
+                    SDL_RenderCopy(ren, tex, NULL, &dst);
+                    SDL_FreeSurface(surf); SDL_DestroyTexture(tex);
+
+                    render_button(ren, font, &play_btn);
+                    render_button(ren, font, &quit_btn_main);
+
+                    if (fading_in) {
+                        fade_alpha -= (int)(fade_speed * (delta_time / 1000.0f));
+                        if (fade_alpha <= 0) { fade_alpha = 0; fading_in = 0; }
+                    }
+                    if (fading_out) {
+                        fade_alpha += (int)(fade_speed * (delta_time / 1000.0f));
+                        if (fade_alpha >= 255) {
+                            fade_alpha = 255; fading_out = 0;
+                            if (next_state == STATE_GAME_RUNNING) { fading_in = 0; }
+                            else { fading_in = 1; fade_alpha = 255; }
+                            state = next_state;
+                        }
+                    }
+                    render_fade(ren, fade_alpha);
+                    break;
+                }
+
+            /* ──────────────────  MODE-SELECT MENU  ────────────────── */
+            case STATE_MODE_SELECT: {
+                    render_background(ren, bg);
+
+                    SDL_Color white = {255, 255, 255, 255};
                     SDL_Surface *surf = TTF_RenderText_Blended(font, "Select Mode", white);
-                    SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, surf);
+                    SDL_Texture *tex  = SDL_CreateTextureFromSurface(ren, surf);
                     int tw = surf->w, th = surf->h;
-                    SDL_Rect dst = { (1280-tw)/2, 120, tw, th };
+                    SDL_Rect dst = { (1280 - tw) / 2, 120, tw, th };
                     SDL_RenderCopy(ren, tex, NULL, &dst);
-                    SDL_FreeSurface(surf);
-                    SDL_DestroyTexture(tex);
-                }
+                    SDL_FreeSurface(surf); SDL_DestroyTexture(tex);
 
-                // --- [Draw Single, Multi, Back Buttons] ---
-                render_button(ren, font, &single_btn);
-                render_button(ren, font, &multi_btn);
-                render_button(ren, font, &back_btn);
+                    render_button(ren, font, &single_btn);
+                    render_button(ren, font, &multi_btn);
+                    render_button(ren, font, &back_btn);
 
-                // --- [Fade Logic] ---
-                if (fading_in) {
-                    fade_alpha -= (int)(fade_speed * (delta_time / 1000.0f));
-                    if (fade_alpha <= 0) { fade_alpha = 0; fading_in = 0; }
-                }
-                if (fading_out) {
-                    fade_alpha += (int)(fade_speed * (delta_time / 1000.0f));
-                    if (fade_alpha >= 255) {
-                        fade_alpha = 255;
-                        fading_out = 0;
-
-                        // Only fade in for menus, not for game running
-                        if (next_state == STATE_GAME_RUNNING) {
-                            fading_in = 0;
-                        } else {
-                            fading_in = 1;
-                            fade_alpha = 255;
-                        }
-                        state = next_state;
+                    if (fading_in) {
+                        fade_alpha -= (int)(fade_speed * (delta_time / 1000.0f));
+                        if (fade_alpha <= 0) { fade_alpha = 0; fading_in = 0; }
                     }
-                }
-                render_fade(ren, fade_alpha);
-                break;
-
-            case STATE_GAME_RUNNING:
-                render_background(ren, game_bg);
-                if (show_default_setup) 
-                {
-                    render_player_zones_and_spots(ren);   // <--- Your default "static" positions
-                }
-                else
-                {
-                    render_left_grid_and_disks(ren);      // <--- Moveable disks in grid
-                    render_right_grid_and_disks(ren);
-                }
-                // --- [Start Your Game] ---
-                // Here, remove all menu/UI and run your game logic and rendering.
-                // Example: render_background(ren, bg); render_player(ren, ...); etc.
-                // (No fade here unless you want a transition out.)
-                break;
-            case STATE_PAUSE_MENU:
-                render_background(ren, game_bg);
-                render_pause_menu(ren, font, &resume_btn, &restart_btn, &quitgame_btn);
-
-                // Fade logic for quitting out of pause menu
-                if (fading_out) {
-                    fade_alpha += (int)(fade_speed * (delta_time / 1000.0f));
-                    if (fade_alpha >= 255) {
-                        fade_alpha = 255;
-                        fading_out = 0;
-                        // Fade in only if returning to a menu, not if going back to game
-                        if (next_state == STATE_MAIN_MENU) {
-                            fading_in = 1;
-                            fade_alpha = 255;
-                        } else {
-                            fading_in = 0;
+                    if (fading_out) {
+                        fade_alpha += (int)(fade_speed * (delta_time / 1000.0f));
+                        if (fade_alpha >= 255) {
+                            fade_alpha = 255; fading_out = 0;
+                            if (next_state == STATE_GAME_RUNNING) { fading_in = 0; }
+                            else { fading_in = 1; fade_alpha = 255; }
+                            state = next_state;
                         }
-                        state = next_state;
                     }
+                    render_fade(ren, fade_alpha);
+                    break;
                 }
-                render_fade(ren, fade_alpha);
-                break;
+
+            /* ──────────────────  GAME RUNNING  ────────────────── */
+            case STATE_GAME_RUNNING: {
+                    render_background(ren, game_bg);
+                    render_goals(ren);
+                    render_scoreboard(ren, font, left_score, right_score);
+
+                    if (show_default_setup) {
+                        render_player_zones_and_spots(ren);
+                    } else {
+                        render_left_grid_and_disks(ren);
+                        render_right_grid_and_disks(ren);
+                    }
+                    break;
+                }
+
+            /* ──────────────────  PAUSE MENU  ────────────────── */
+            case STATE_PAUSE_MENU: {
+                    render_background(ren, game_bg);
+                    render_goals(ren);
+
+                    render_pause_menu(ren, font,
+                                    &resume_btn, &restart_btn, &quitmatch_btn);
+
+                    render_scoreboard(ren, font, left_score, right_score);
+
+                    if (fading_out) {
+                        fade_alpha += (int)(fade_speed * (delta_time / 1000.0f));
+                        if (fade_alpha >= 255) {
+                            fade_alpha = 255; fading_out = 0;
+
+                            if (next_state == STATE_MAIN_MENU ||
+                                next_state == STATE_MODE_SELECT ||
+                                next_state == STATE_GAME_RESULT) {
+                                fading_in  = 1;
+                                fade_alpha = 255;
+                            } else {
+                                fading_in = 0;   /* returning to play */
+                            }
+                            state = next_state;
+                        }
+                    }
+                    render_fade(ren, fade_alpha);
+                    break;
+                }
+
+            /* ──────────────────  GAME RESULT  ────────────────── */
+            case STATE_GAME_RESULT: {
+                    render_background(ren, game_bg);
+                    render_goals(ren);
+                    render_game_result(ren, font, left_score, right_score);
+
+                    if (fading_in) {
+                        fade_alpha -= (int)(fade_speed * (delta_time / 1000.0f));
+                        if (fade_alpha <= 0) { fade_alpha = 0; fading_in = 0; }
+                    }
+                    if (fading_out) {
+                        fade_alpha += (int)(fade_speed * (delta_time / 1000.0f));
+                        if (fade_alpha >= 255) {
+                            fade_alpha = 255; fading_out = 0;
+
+                            if (next_state == STATE_MAIN_MENU ||
+                                next_state == STATE_MODE_SELECT) {
+                                fading_in  = 1; fade_alpha = 255;
+                            } else {
+                                fading_in = 0;
+                            }
+                            state = next_state;
+                        }
+                    }
+                    render_fade(ren, fade_alpha);
+                    break;
+                }
+
+            /* ──────────────────  EXIT  ────────────────── */
             case STATE_EXIT:
-                running = 0; // End the main loop
-                break;
+                    running = 0;
+                    break;
         }
+
 
         //render_player(ren, &player);
         SDL_RenderPresent(ren);
